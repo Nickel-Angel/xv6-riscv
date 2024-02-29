@@ -5,7 +5,7 @@
 void
 sieve(int frpipe) {
     int p[2];
-    int prime, pre, readstatus, waitstatus, forked = 0;
+    int prime, pre, readstatus, forked = 0;
     /* 
     the first number we recieve must be a prime.
     we guarantee that once a process enters this function,
@@ -20,7 +20,7 @@ sieve(int frpipe) {
             if (forked) {
                 close(p[1]);
             }
-            wait(&waitstatus);
+            wait(0);
             return;
         }
         if (pre % prime == 0) {
