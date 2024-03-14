@@ -675,3 +675,29 @@ procdump(void)
     printf("\n");
   }
 }
+
+int
+pgaccess(uint64 base, int len, uint64 mask)
+{
+  struct proc *p = myproc();
+  unsigned int ret = 0;
+
+  // We only prepared a 32-bits buffer, 
+  // if len greater than 32, we can't return the result.
+  if(len > 32)
+    return -1;
+
+  pte_t *pte = walk(p->pagetable, base, 0);
+
+  for(int i = 0; i < len; ++i)
+  { 
+    if((pte[i] & PTE_V) && (pte[i] & PTE_A))
+    {
+      ret |= 1 << i;
+      pte[i] ^= PTE_A;
+    }
+  }
+  if(copyout(p->pagetable, mask, (char *)&ret, sizeof(ret)))
+    return -1;
+  return 0;
+}
