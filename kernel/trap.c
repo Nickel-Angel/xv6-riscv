@@ -29,6 +29,19 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+void handlealarm(struct proc *p)
+{
+    p->tickpassed++;
+    if (p->tickpassed > p->alarminterval) // turns out the last call haven't finished
+        return;
+    if (p->tickpassed == p->alarminterval)
+    {
+        // backup the p->trapframe
+        memmove(p->alarm_trapframe, p->trapframe, PGSIZE);
+        p->trapframe->epc = p->handler;
+    }   
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -66,6 +79,11 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
+    if (which_dev == 2)
+    {
+        if (p->alarminterval != 0)
+            handlealarm(p);
+    }
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);

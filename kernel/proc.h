@@ -97,10 +97,14 @@ struct proc {
   struct proc *parent;         // Parent process
 
   // these are private to the process, so p->lock need not be held.
+  int alarminterval;           // Interval between two alarm handler calls
+  int tickpassed;              // Ticks have passed since the last call to a process's alarm handler
+  uint64 handler;              // Virtual address of alarm handler function
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
+  struct trapframe *alarm_trapframe;
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
