@@ -29,6 +29,28 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+void pagefault(struct proc *p){
+    printf("page fault\n");
+    uint64 va = r_stval();
+    if(va > p->sz || PGROUNDDOWN(va) == r_sp() || walkaddr(p->pagetable, va))
+    {
+        p->killed = 1;
+        return;
+    }
+    uint64 ka = (uint64)kalloc();
+    if (ka == 0)
+    {
+        p->killed = 1;
+        return;
+    }
+    memset((void *)ka, 0, PGSIZE);
+    if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, ka, PTE_W|PTE_X|PTE_R|PTE_U) < 0)
+    {
+        kfree((void *)ka);
+        p->killed = 1;
+    }
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -66,14 +88,7 @@ usertrap(void)
 
     syscall();
   } else if(r_scause() == 13 || r_scause() == 15) {
-    uint64 va = r_stval();
-    printf("page fault\n");
-    uint64 ka = (uint64)kalloc();
-    memset((void *)ka, 0, PGSIZE);
-    if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, ka, PTE_W|PTE_X|PTE_R|PTE_U) < 0){
-        kfree((void *)ka);
-        p->killed = 1;
-    }
+    pagefault(p);
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
