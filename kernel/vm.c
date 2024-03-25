@@ -3,7 +3,6 @@
 #include "memlayout.h"
 #include "elf.h"
 #include "riscv.h"
-#include "proc.h"
 #include "defs.h"
 #include "fs.h"
 
@@ -344,7 +343,7 @@ uvmcowcopy(pagetable_t pagetable, uint64 va)
   pa = PTE2PA(*pte);
   flags = PTE_FLAGS(*pte);
 
-  if((mem = kcopy(pa)) == 0)
+  if((mem = kcopy((void*)pa)) == 0)
     return -1;
   uvmunmap(pagetable, PGROUNDDOWN(va), 1, 0);
   if(mappages(pagetable, va, 1, (uint64)mem, flags) != 0)
@@ -374,6 +373,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   uint64 n, va0, pa0;
 
   while(len > 0){
+    if(dstva < MAXVA)
+      uvmcowcopy(pagetable, dstva);
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)

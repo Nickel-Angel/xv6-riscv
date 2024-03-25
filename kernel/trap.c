@@ -67,20 +67,8 @@ usertrap(void)
     syscall();
   } else if(r_scause() == 12 || r_scause() == 15){
     uint64 va = r_stval();
-    pte_t *pte = walk(p->pagetable, va, 0);
-    if(va > p->sz || PGROUNDDOWN(va) == r_sp() || pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_C))
+    if(va > p->sz || PGROUNDDOWN(va) == r_sp() || uvmcowcopy(p->pagetable, va) != 0)
       goto unexpected_scause;
-    uint flags = PTE_FLAGS(*pte);
-    uint64 pa = PTE2PA(*pte);
-    char *mem;
-    if((mem = kcopy((void*)pa)) == 0)
-      goto unexpected_scause;
-    flags ^= PTE_C;
-    uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0);
-    if(mappages(p->pagetable, va, 1, (uint64)mem, flags | PTE_W) != 0){
-      kfree(mem);
-      goto unexpected_scause;
-    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
