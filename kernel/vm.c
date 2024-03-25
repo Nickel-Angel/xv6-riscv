@@ -3,6 +3,7 @@
 #include "memlayout.h"
 #include "elf.h"
 #include "riscv.h"
+#include "proc.h"
 #include "defs.h"
 #include "fs.h"
 
@@ -303,28 +304,52 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    if(*pte & PTE_W){
+      *pte &= ~PTE_W; // clear the PTE_W flag
+      *pte |= PTE_C;  // set the PTE_C (COW) flag
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+    knewmap((void *)pa);
   }
   return 0;
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
+}
+
+int
+uvmcowcopy(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint flags;
+  uint64 pa;
+  char *mem;
+
+  pte = walk(pagetable, va, 0);
+  if (pte == 0 || !(*pte & PTE_V) || !(*pte & PTE_C))
+    return -1;
+  
+  *pte |= PTE_W;
+  *pte &= ~PTE_C;
+  pa = PTE2PA(*pte);
+  flags = PTE_FLAGS(*pte);
+
+  if((mem = kcopy(pa)) == 0)
+    return -1;
+  uvmunmap(pagetable, PGROUNDDOWN(va), 1, 0);
+  if(mappages(pagetable, va, 1, (uint64)mem, flags) != 0)
+    panic("uvmcowcopy: mappages");
+  return 0;
 }
 
 // mark a PTE invalid for user access.
