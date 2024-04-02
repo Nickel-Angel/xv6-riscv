@@ -49,6 +49,7 @@ binit(void)
     snprintf(lkname, sizeof(lkname), "bcache_%d", i);
     initlock(&hashtable[i].lock, lkname);
     hashtable[i].head.next = 0;
+    hashtable[i].head.prev = 0;
   }
 
   // Create linked list of buffers
@@ -56,12 +57,13 @@ binit(void)
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
     b->next = hashtable[i].head.next;
     b->prev = &hashtable[i].head;
+    b->blockno = i; // init hash result
+    b->timestamp = 0;
+    b->refcnt = 0;
     initsleeplock(&b->lock, "buffer");
     if(hashtable[i].head.next)
-    {
       hashtable[i].head.next->prev = b;
-      hashtable[i].head.next = b;
-    }
+    hashtable[i].head.next = b;
     i = (i + 1) % BCACHEBUC;
   }
 }
@@ -86,79 +88,78 @@ bget(uint dev, uint blockno)
       return b;
     }
   }
-
-  uint time = __INT_MAX__;
-  struct buf *select_buf = 0;
   
   // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = hashtable[bucno].head.next; b != 0; b = b->next){
-    if(b->refcnt == 0 && time > b->timestamp){
-      select_buf = b;
-      time = b->timestamp;
-    }
-  }
-
-  if(select_buf)
-  {
-    select_buf->dev = dev;
-    select_buf->blockno = blockno;
-    select_buf->valid = 0;
-    select_buf->refcnt = 1;
-    release(&hashtable[bucno].lock);
-    acquiresleep(&select_buf->lock);
-    return select_buf;  
-  }
-
+  release(&hashtable[bucno].lock);
+  
   acquire(&bcache.lock);
 
-global_find:
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    if(b->refcnt == 0 && time > b->timestamp){
+  for(b = hashtable[bucno].head.next; b != 0; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){
+      acquire(&hashtable[bucno].lock);
+      b->refcnt++;
+      release(&hashtable[bucno].lock);
+      release(&bcache.lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
+  }
+    
+  // Still not cached.
+  // Recycle the least recently used (LRU) unused buffer.
+  struct buf *select_buf = 0;
+  int holdlock = -1; // previous selected buf in which hashtable
+  uint time = 0;
+  for(int i = 0; i < BCACHEBUC; ++i){
+    acquire(&hashtable[i].lock);
+    for(b = hashtable[i].head.next; b != 0; b = b->next){
+      if(b->refcnt == 0 && (select_buf == 0 || time > b->timestamp)){
         select_buf = b;
         time = b->timestamp;
+        release(&hashtable[holdlock].lock);
+        holdlock = i;
+      }
     }
+    if(holdlock != i)
+      release(&hashtable[i].lock);
   }
 
   if(select_buf)
   {
     if(select_buf->blockno % BCACHEBUC == bucno)
     {
-      release(&bcache.lock);
       select_buf->dev = dev;
       select_buf->blockno = blockno;
       select_buf->valid = 0;
       select_buf->refcnt = 1;
       release(&hashtable[bucno].lock);
+      release(&bcache.lock);
       acquiresleep(&select_buf->lock);
       return select_buf;
     } else {
-      acquire(&hashtable[select_buf->blockno % BCACHEBUC].lock);
-      if(select_buf->refcnt != 0)
-      {
-        release(&hashtable[select_buf->blockno % BCACHEBUC].lock);
-        goto global_find;
-      }
+      int sbucno = select_buf->blockno % BCACHEBUC;
+      
       // delete from original bucket
       select_buf->prev->next = select_buf->next;
       if(select_buf->next)
         select_buf->next->prev = select_buf->prev;
-      release(&hashtable[select_buf->blockno % BCACHEBUC].lock);
+      release(&hashtable[sbucno].lock);
       
+      acquire(&hashtable[bucno].lock);
       select_buf->prev = &hashtable[bucno].head;
       select_buf->next = hashtable[bucno].head.next;
       if(hashtable[bucno].head.next)
       {
         hashtable[bucno].head.next->prev = select_buf;
         hashtable[bucno].head.next = select_buf;
-      }
-      release(&bcache.lock);
+      }      
 
       select_buf->dev = dev;
       select_buf->blockno = blockno;
       select_buf->valid = 0;
       select_buf->refcnt = 1;
       release(&hashtable[bucno].lock);
+      release(&bcache.lock);
       acquiresleep(&select_buf->lock);
       return select_buf;
     }
@@ -197,9 +198,9 @@ brelse(struct buf *b)
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
-  int bucno = b->blockno % BCACHEBUC;
-
   releasesleep(&b->lock);
+
+  int bucno = b->blockno % BCACHEBUC;
 
   acquire(&hashtable[bucno].lock);
   b->refcnt--;
