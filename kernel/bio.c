@@ -106,13 +106,11 @@ bget(uint dev, uint blockno)
   // Recycle the least recently used (LRU) unused buffer.
   struct buf *select_buf = 0;
   int pre_bucket = -1; // previous selected buf in which bucket
-  uint time = 0;
   for(int i = 0; i < NBUFBUCKET; ++i){
     acquire(&bcache.bucket_lock[i]);
     for(b = bcache.bucket_head[i].next; b != 0; b = b->next){
-      if(b->refcnt == 0 && (select_buf == 0 || time > b->timestamp)){
+      if(b->refcnt == 0 && (select_buf == 0 || select_buf->timestamp > b->timestamp)){
         select_buf = b;
-        time = b->timestamp;
         if (pre_bucket != i && pre_bucket != -1)
             release(&bcache.bucket_lock[pre_bucket]);
         pre_bucket = i;
@@ -124,35 +122,26 @@ bget(uint dev, uint blockno)
 
   if(select_buf)
   {
-    if(select_buf->blockno % NBUFBUCKET == bucno)
+    if(pre_bucket != bucno)
     {
-      select_buf->dev = dev;
-      select_buf->blockno = blockno;
-      select_buf->valid = 0;
-      select_buf->refcnt = 1;
-    } else {
-      int sbucno = select_buf->blockno % NBUFBUCKET;
-      
       // delete from original bucket
-      select_buf->prev->next = select_buf->next;
+      if(select_buf->prev)
+        select_buf->prev->next = select_buf->next;
       if(select_buf->next)
         select_buf->next->prev = select_buf->prev;
-      release(&bcache.bucket_lock[sbucno]);
+      release(&bcache.bucket_lock[pre_bucket]);
       
       acquire(&bcache.bucket_lock[bucno]);
       select_buf->prev = &bcache.bucket_head[bucno];
       select_buf->next = bcache.bucket_head[bucno].next;
       if(bcache.bucket_head[bucno].next)
-      {
         bcache.bucket_head[bucno].next->prev = select_buf;
-        bcache.bucket_head[bucno].next = select_buf;
-      }      
-
-      select_buf->dev = dev;
-      select_buf->blockno = blockno;
-      select_buf->valid = 0;
-      select_buf->refcnt = 1;
+      bcache.bucket_head[bucno].next = select_buf;     
     }
+    select_buf->dev = dev;
+    select_buf->blockno = blockno;
+    select_buf->valid = 0;
+    select_buf->refcnt = 1;
     release(&bcache.bucket_lock[bucno]);
     release(&bcache.lock);
     acquiresleep(&select_buf->lock);
