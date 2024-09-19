@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -491,14 +492,47 @@ sys_mmap(void)
   uint64 addr;
   uint length;
   int prot, flags, fd, offset;
-  if (argaddr(0, &addr) < 0)
+  struct file *f;
+  
+  if(argaddr(0, &addr) < 0)
     return -1;
-  if (arguint(1, &length) < 0)
+  if(arguint(1, &length) < 0)
     return -1;
-  if (argint(2, &prot) < 0 || argint(3, &flags) < 0 || argint(4, &fd) < 0 || argint(5, &offset) < 0)
+  if(argint(2, &prot) < 0 || argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0 || argint(5, &offset) < 0)
+    return -1;
+  if((!f->readable && (prot & PROT_READ)) || (!f->writable && (prot & PROT_WRITE) && !(flags & MAP_PRIVATE)))
     return -1;
 
-  return 0;  
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  uint64 vend = MMAPEND;
+  int i;
+
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid == 0){
+      if(v == 0){
+        v = &p->vmas[i];
+        v->valid = 1;
+      }    
+    } else if(p->vmas[i].va_start < vend){
+        vend = PGROUNDDOWN(p->vmas[i].va_start);
+    }
+  }
+
+  if(v == 0){
+    panic("mmap: no free vma");
+  }
+
+  length = PGROUNDUP(length);
+  v->va_start = vend - length;
+  v->sz = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f;
+  v->offset = offset;
+  filedup(v->f);
+
+  return v->va_start;  
 }
 
 uint64
@@ -506,10 +540,10 @@ sys_munmap(void)
 {
   uint64 addr;
   uint length;
-    if (argaddr(0, &addr) < 0)
+  if(argaddr(0, &addr) < 0)
     return -1;
-  if (arguint(1, &length) < 0)
+  if(arguint(1, &length) < 0)
     return -1;
 
-  return 0;
+  return munmap(addr, length);
 }

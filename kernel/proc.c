@@ -301,6 +301,14 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  for(i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->valid){
+      np->vmas[i] = *v;
+      filedup(v->f);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -343,6 +351,13 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid){
+      if(munmap(p->vmas[i].va_start, p->vmas[i].sz) != 0)
+        panic("exit: munmap");
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

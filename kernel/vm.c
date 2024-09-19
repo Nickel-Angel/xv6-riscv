@@ -5,6 +5,12 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "proc.h"
+#include "file.h"
+#include "fcntl.h"
+
 
 /*
  * the kernel's page table.
@@ -431,4 +437,119 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+struct vma *findvma(struct proc *p, uint64 va)
+{
+  int i;
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].valid == 1 && p->vmas[i].va_start <= va && va < p->vmas[i].va_start + p->vmas[i].sz)
+      return &p->vmas[i];
+  }
+  return 0;
+}
+
+int vmaalloc(uint64 va)
+{
+    struct proc *p = myproc();
+    struct vma *v = findvma(p, va);
+    
+    if (v == 0){
+      return -1;
+    }
+
+    void *pa = kalloc();
+    if(pa == 0)
+      panic("vmaalloc: kalloc");
+    memset(pa, 0, PGSIZE);
+
+    begin_op();
+    ilock(v->f->ip);
+    readi(v->f->ip, 0, (uint64)pa, v->offset + PGROUNDDOWN(va - v->va_start), PGSIZE);
+    iunlock(v->f->ip);
+    end_op();
+
+    int perm = PTE_U;
+    if(v->prot & PROT_READ)
+      perm |= PTE_R;
+    if(v->prot & PROT_WRITE)
+      perm |= PTE_W;
+    if(v->prot & PROT_EXEC)
+      perm |= PTE_X;
+
+    if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, perm) != 0){
+      kfree(pa);
+      return -1;
+    }
+
+    return 0;
+}
+
+void
+vmaunmap(pagetable_t pagetable, uint64 va, uint64 nbytes, struct vma *v)
+{
+  uint64 a, pa, off;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("vmaunmap: not aligned");
+
+  for(a = va; a < va + nbytes; a += PGSIZE){
+    if((pte = walk(pagetable, a, 0)) == 0)
+      continue;
+    if((*pte & PTE_V) == 0)
+      continue;
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("vmaunmap: not a leaf");
+    pa = PTE2PA(*pte);
+    if(v->flags & MAP_SHARED){    
+        begin_op();
+        ilock(v->f->ip);
+        off = a - v->va_start;
+        if(off < 0){
+          writei(v->f->ip, 0, pa - off, v->offset, v->sz + off);
+        } else if (v->sz - off < PGSIZE){
+          writei(v->f->ip, 0, pa, v->offset + off, v->sz - off);
+        } else {
+          writei(v->f->ip, 0, pa, v->offset + off, PGSIZE);
+        }
+        iunlock(v->f->ip);
+        end_op();
+    }
+    kfree((void *)pa);
+    *pte = 0;
+  }
+}
+
+int
+munmap(uint64 addr, uint length)
+{
+  struct proc *p = myproc();
+  struct vma *v = findvma(p, addr);
+  if(v == 0)
+    return -1;
+  if(v->va_start < addr && addr + length < v->va_start + v->sz)
+    return -1;
+
+  uint64 aligned_addr = addr;
+  if(addr != v->va_start)
+    aligned_addr = PGROUNDUP(addr);
+  uint64 n = length - (aligned_addr - addr);
+  if (n < 0)
+    return -1;
+
+  vmaunmap(p->pagetable, aligned_addr, n, v);
+  
+  if(addr == v->va_start && length > 0){
+    v->offset += length;
+    v->va_start += length;
+  }
+  v->sz -= length;
+
+  if(v->sz <= 0){
+    fileclose(v->f);
+    v->valid = 0;
+  }
+
+  return 0;
 }
